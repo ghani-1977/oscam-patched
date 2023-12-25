@@ -58,7 +58,7 @@ override STD_DEFS += -D'CS_CONFDIR="$(CONF_DIR)"'
 CC_WARN = -W -Wall -Wshadow -Wredundant-decls -Wstrict-prototypes -Wold-style-definition
 
 # Compiler optimizations
-CC_OPTS = -O2 -ggdb -pipe -ffunction-sections -fdata-sections
+CC_OPTS = -O3 -ggdb -pipe -ffunction-sections -fdata-sections -funroll-loops -fomit-frame-pointer -fno-schedule-insns
 
 CC = $(CROSS_DIR)$(CROSS)gcc
 STRIP = $(CROSS_DIR)$(CROSS)strip
@@ -68,6 +68,8 @@ LDFLAGS = -Wl,--gc-sections
 TARGETHELP := $(shell $(CC) --target-help 2>&1)
 ifneq (,$(findstring sse2,$(TARGETHELP)))
 override CFLAGS += -fexpensive-optimizations -mmmx -msse -msse2 -msse3
+else ifneq (,$(findstring neon,$(TARGETHELP)))
+override CFLAGS += -fexpensive-optimizations -mfpu=neon
 else
 override CFLAGS += -fexpensive-optimizations
 endif
@@ -117,10 +119,15 @@ ifeq ($(uname_S),FreeBSD)
 	DEFAULT_LIBUSB_LIB = -lusb
 endif
 ifeq ($(uname_S),Darwin)
-	DEFAULT_LIBUSB_FLAGS = -I/opt/local/include
-	DEFAULT_LIBUSB_LIB = -L/opt/local/lib -lusb-1.0
-	DEFAULT_PCSC_FLAGS = -isysroot $(OSX_SDK)
-	DEFAULT_PCSC_LIB = -isysroot $(OSX_SDK) -framework IOKit -framework CoreFoundation -framework PCSC
+	FIX_OPENSSL_FLAGS_DIR := $(shell ln -sf /usr/local/opt/openssl@1.1/include/openssl /usr/local/include)
+	FIX_OPENSSL_LIB_DIR := $(shell ln -sf /usr/local/opt/openssl@1.1/lib/libssl.1.1.dylib /usr/local/lib)
+	FIX_OPENSSL_LIBCRYPTO_DIR := $(shell ln -sf /usr/local/opt/openssl@1.1/lib/libcrypto.1.1.dylib /usr/local/lib)
+	DEFAULT_LIBCRYPTO_LIB = -L/usr/local/opt/openssl@1.1/lib -lcrypto
+	DEFAULT_SSL_LIB = -L/usr/local/opt/openssl@1.1/lib -lssl
+	DEFAULT_LIBUSB_FLAGS = -I/usr/local/opt/libusb/include
+	DEFAULT_LIBUSB_LIB = -L/usr/local/opt/libusb/lib -lusb-1.0 -framework IOKit -framework CoreFoundation -framework Security
+	DEFAULT_PCSC_FLAGS = -I/usr/local/opt/pcsc-lite/include/PCSC
+	DEFAULT_PCSC_LIB = -L/usr/local/opt/pcsc-lite/lib -framework IOKit -framework CoreFoundation -framework PCSC
 else
 	# Get the compiler's last include PATHs. Basicaly it is /usr/include
 	# but in case of cross compilation it might be something else.
@@ -284,6 +291,7 @@ SRC-$(CONFIG_WITH_EMU) += module-emulator-streamserver.c
 SRC-$(CONFIG_WITH_EMU) += module-emulator-biss.c
 SRC-$(CONFIG_WITH_EMU) += module-emulator-cryptoworks.c
 SRC-$(CONFIG_WITH_EMU) += module-emulator-director.c
+SRC-$(CONFIG_WITH_EMU) += module-emulator-icam.c
 SRC-$(CONFIG_WITH_EMU) += module-emulator-irdeto.c
 SRC-$(CONFIG_WITH_EMU) += module-emulator-nagravision.c
 SRC-$(CONFIG_WITH_EMU) += module-emulator-powervu.c
@@ -449,7 +457,7 @@ $(OBJDIR)/config.o: $(OBJDIR)/config.c
 	$(Q)$(CC) $(STD_DEFS) $(CC_OPTS) $(CC_WARN) $(CFLAGS) -c $< -o $@
 
 $(OBJDIR)/%.o: %.c Makefile
-	@$(CC) -MP -MM -MT $@ -o $(subst .o,.d,$@) $<
+	@$(CC) $(CFLAGS) -MP -MM -MT $@ -o $(subst .o,.d,$@) $<
 	$(SAY) "CC	$<"
 	$(Q)$(CC) $(STD_DEFS) $(CC_OPTS) $(CC_WARN) $(CFLAGS) -c $< -o $@
 

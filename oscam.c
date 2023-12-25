@@ -424,6 +424,10 @@ static void write_versionfile(bool use_stdout)
 		write_conf(WITH_STAPI5, "DVB API with STAPI5 support");
 		write_conf(WITH_NEUTRINO, "DVB API with NEUTRINO support");
 		write_conf(READ_SDT_CHARSETS, "DVB API read-sdt charsets");
+		if(config_enabled(WITH_EMU))
+		{
+			write_conf(true, "DVB API with ICAM v9 stream relay support");
+		}
 	}
 	write_conf(IRDETO_GUESSING, "Irdeto guessing");
 	write_conf(CS_ANTICASC, "Anti-cascading support");
@@ -431,7 +435,9 @@ static void write_versionfile(bool use_stdout)
 	write_conf(MODULE_MONITOR, "Monitor");
 	write_conf(WITH_LB, "Loadbalancing support");
 	write_conf(CS_CACHEEX, "Cache exchange support");
+#ifdef CS_CACHEEX_AIO
 	write_conf(CS_CACHEEX_AIO, "Cache exchange AIO support");
+#endif
 	write_conf(CW_CYCLE_CHECK, "CW Cycle Check support");
 	write_conf(LCDSUPPORT, "LCD support");
 	write_conf(LEDSUPPORT, "LED support");

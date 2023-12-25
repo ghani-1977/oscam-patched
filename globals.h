@@ -36,7 +36,10 @@
 #include <termios.h>
 #include <inttypes.h>
 #include <sys/utsname.h>
+
+#if !defined(__APPLE__)
 #include <sys/sysmacros.h>
+#endif
 
 /*
  * The following hack is taken from Linux: include/linux/kconfig.h
@@ -59,6 +62,11 @@
 #if defined(WITH_SSL) && !defined(WITH_LIBCRYPTO)
 # define WITH_LIBCRYPTO 1
 #endif
+
+/* For deprecated but still needed cryptography functions:
+ * 10002 corresponds to OpenSSL version 1.0.2*/
+
+#define OPENSSL_API_COMPAT 10002
 
 #if defined(__CYGWIN__) || defined(__arm__) || defined(__SH4__) || defined(__MIPS__) || defined(__MIPSEL__) || defined(__powerpc__)
 # define CS_LOGFILE "/dev/tty"
@@ -402,6 +410,8 @@
 #define MAX_ECM_SIZE			596
 #define MAX_EMM_SIZE			512
 #endif
+
+#define MAX_CMD_SIZE 0xff + 5  // maximum value from length byte + command header
 
 #ifdef WITH_EMU
 #define CS_EMMCACHESIZE			1024	// nr of EMMs that EMU reader will cache
@@ -895,6 +905,7 @@ typedef struct s_entitlement						// contains entitlement Info
 struct s_client;
 struct ecm_request_t;
 struct emm_packet_t;
+struct cmd_packet_t;
 struct s_ecm_answer;
 struct demux_s;
 
@@ -1001,6 +1012,7 @@ struct s_cardsystem
 	int32_t			(*do_ecm)(struct s_reader *, const struct ecm_request_t *, struct s_ecm_answer *);
 	int32_t			(*do_emm_reassembly)(struct s_reader *, struct s_client *, struct emm_packet_t *); // Returns 1/true if the EMM is ready to be written in the card
 	int32_t			(*do_emm)(struct s_reader *, struct emm_packet_t *);
+	int32_t			(*do_rawcmd)(struct s_reader *, struct cmd_packet_t *);
 	void			(*post_process)(struct s_reader *);
 	int32_t			(*get_emm_type)(struct emm_packet_t *, struct s_reader *);
 	int32_t			(*get_emm_filter)(struct s_reader *, struct s_csystem_emm_filter **, uint32_t *);
@@ -1529,6 +1541,13 @@ typedef struct emm_packet_t
 	struct s_client *client;
 } EMM_PACKET;
 
+typedef struct cmd_packet_t
+{
+	uint8_t			cmd[MAX_CMD_SIZE];
+	int16_t			cmdlen;
+	struct s_client *client;
+} CMD_PACKET;
+
 struct s_reader										// contains device info, reader info and card info
 {
 	uint8_t			keepalive;
@@ -1815,6 +1834,7 @@ struct s_reader										// contains device info, reader info and card info
 	int8_t			readtiers;						// method to get videoguard tiers
 	uint8_t			ins7E[0x1A + 1];
 	uint8_t			ins7E11[0x01 + 1];
+	uint8_t			ins42[0x25 + 1];
 	uint8_t			ins2e06[0x04 + 1];
 	int8_t			ins7e11_fast_reset;
 	uint8_t			k1_generic[0x10 + 1];			// k1 for generic pairing mode
@@ -2569,6 +2589,7 @@ static inline bool caid_is_seca(uint16_t caid) { return caid >> 8 == 0x01; }
 static inline bool caid_is_viaccess(uint16_t caid) { return caid >> 8 == 0x05; }
 static inline bool caid_is_irdeto(uint16_t caid) { return caid >> 8 == 0x06; }
 static inline bool caid_is_videoguard(uint16_t caid) { return caid >> 8 == 0x09; }
+static inline bool caid_is_icam(uint16_t caid) { return caid == 0x098C || caid == 0x098D || caid == 0x09C4; }
 static inline bool caid_is_conax(uint16_t caid) { return caid >> 8 == 0x0B; }
 static inline bool caid_is_cryptoworks(uint16_t caid) { return caid >> 8 == 0x0D; }
 static inline bool caid_is_powervu(uint16_t caid) { return caid >> 8 == 0x0E; }
