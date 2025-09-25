@@ -11,8 +11,8 @@
 #include "module-dvbapi-coolapi.h"
 #include "module-dvbapi-stapi.h"
 #include "module-dvbapi-chancache.h"
-#include "module-emulator-streamserver.h"
 #include "module-stat.h"
+#include "module-streamrelay.h"
 #include "oscam-chk.h"
 #include "oscam-client.h"
 #include "oscam-config.h"
@@ -1249,6 +1249,14 @@ static int32_t dvbapi_detect_api(void)
 				maxfilter = filtercount;
 				cs_log("Detected %s Api: %d, userconfig boxtype: %d maximum number of filters is %d (oscam limit is %d)",
 					device_path, selected_api, cfg.dvbapi_boxtype, filtercount, MAX_FILTER);
+
+#ifdef MODULE_STREAMRELAY
+				// Log enabled demuxer fix
+				if(cfg.dvbapi_demuxer_fix)
+				{
+					cs_log("Demuxer fix enabled, try fixing stream relay audio/video sync...");
+				}
+#endif
 			}
 
 			// try at least 8 adapters
@@ -6666,14 +6674,6 @@ static void *dvbapi_main_local(void *cli)
 	memset(assoc_fd, 0, sizeof(assoc_fd));
 	dvbapi_read_priority();
 	dvbapi_load_channel_cache();
-	dvbapi_detect_api();
-
-	if(selected_box == -1 || selected_api == -1)
-	{
-		cs_log("ERROR: Could not detect DVBAPI version.");
-		free(mbuf);
-		return NULL;
-	}
 
 	// detect box type first and then get descrambler info
 	dvbapi_get_descrambler_info();
@@ -6831,10 +6831,24 @@ static void *dvbapi_main_local(void *cli)
 				}
 
 				// count ecm filters to see if demuxing is possible anyway
-				if(demux[i].demux_fd[g].type == TYPE_ECM)
+#ifdef MODULE_STREAMRELAY
+				if(cfg.dvbapi_demuxer_fix)
 				{
-					ecmcounter++;
+					if(demux[i].demux_fd[g].type == TYPE_ECM || demux[i].demux_fd[g].type == 3 || demux[i].demux_fd[g].type == 6)
+					{
+						ecmcounter++;
+					}
 				}
+				else
+				{
+#endif
+					if(demux[i].demux_fd[g].type == TYPE_ECM)
+					{
+						ecmcounter++;
+					}
+#ifdef MODULE_STREAMRELAY
+				}
+#endif
 
 				// count emm filters also
 				if(demux[i].demux_fd[g].type == TYPE_EMM)
@@ -7503,6 +7517,25 @@ void delayer(ECM_REQUEST *er, uint32_t delay)
 	}
 }
 
+#ifdef WITH_EXTENDED_CW
+bool caid_is_csa_alt(uint16_t caid)
+{
+	return caid == 0x09c4 || caid == 0x098c || caid==0x098d;
+}
+
+bool select_csa_alt(ECM_REQUEST *er)
+{
+	if(caid_is_csa_alt(er->caid))
+	{
+		if((er->ecm[2] - er->ecm[4]) == 4)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+#endif
+
 void dvbapi_send_dcw(struct s_client *client, ECM_REQUEST *er)
 {
 	int32_t i, j, k, handled = 0;
@@ -7850,14 +7883,14 @@ void dvbapi_send_dcw(struct s_client *client, ECM_REQUEST *er)
 
 		delayer(er, delay);
 
-#ifdef WITH_EMU
+#ifdef MODULE_STREAMRELAY
 		bool set_dvbapi_cw = true;
-		if(chk_ctab_ex(er->caid, &cfg.emu_stream_relay_ctab) && cfg.emu_stream_relay_enabled)
+		if(chk_ctab_ex(er->caid, &cfg.stream_relay_ctab) && cfg.stream_relay_enabled)
 		{
 			// streamserver set cw
 			set_dvbapi_cw = !stream_write_cw(er);
 		}
-		if(set_dvbapi_cw)
+		if (set_dvbapi_cw)
 #endif
 		switch(selected_api)
 		{
@@ -7926,6 +7959,14 @@ void dvbapi_send_dcw(struct s_client *client, ECM_REQUEST *er)
 					if(er->cw_ex.algo == CW_ALGO_AES128)
 					{
 						dvbapi_write_cw(i, j, 0, er->cw_ex.session_word, 16, er->cw_ex.data, 16, er->cw_ex.algo, er->cw_ex.algo_mode, er->msgid);
+					}
+					else if(er->cw_ex.algo == CW_ALGO_CSA)
+					{
+						if(select_csa_alt(er))
+						{
+							er->cw_ex.algo = CW_ALGO_CSA_ALT;
+						}
+						dvbapi_write_cw(i, j, 0, er->cw, 8, NULL, 0, er->cw_ex.algo, er->cw_ex.algo_mode, er->msgid);
 					}
 					else
 					{
@@ -8125,10 +8166,10 @@ void dvbapi_write_ecminfo_file(struct s_client *client, ECM_REQUEST *er, uint8_t
 								reader_name, from_name, from_port, proto_name);
 						}
 						else
-							{
-								fprintf(ecmtxt, "reader: %s\nfrom: %s - %s\nprotocol: %s\n",
-									reader_name, from_name, from_device, proto_name);
-							}
+						{
+							fprintf(ecmtxt, "reader: %s\nfrom: %s - %s\nprotocol: %s\n",
+								reader_name, from_name, from_device, proto_name);
+						}
 					}
 					break;
 
@@ -8149,8 +8190,16 @@ void dvbapi_write_ecminfo_file(struct s_client *client, ECM_REQUEST *er, uint8_t
 				case E_FOUND:
 					if(er->selected_reader)
 					{
-						fprintf(ecmtxt, "reader: %s\nfrom: %s:%d\nprotocol: %s\nhops: %d\n",
-							reader_name, from_name, from_port, proto_name, hops);
+						if(is_network_reader(er->selected_reader))
+						{
+							fprintf(ecmtxt, "reader: %s\nfrom: %s:%d\nprotocol: %s\nhops: %d\n",
+								reader_name, from_name, from_port, proto_name, hops);
+						}
+						else
+						{
+							fprintf(ecmtxt, "reader: %s\nfrom: %s - %s\nprotocol: %s\nhops: %d\n",
+								reader_name, from_name, from_device, proto_name, hops);
+						}
 					}
 					break;
 
@@ -8241,15 +8290,19 @@ void *dvbapi_start_handler(struct s_client *cl, uint8_t *UNUSED(mbuf), int32_t m
 	// cs_log("dvbapi loaded fd=%d", idx);
 	if(cfg.dvbapi_enabled == 1)
 	{
+		dvbapi_detect_api();
+
+		if(selected_box == -1 || selected_api == -1)
+		{
+			cs_log("ERROR: Could not detect DVBAPI version.");
+			return NULL;
+		}
+
 		cl = create_client(get_null_ip());
 		cl->module_idx = module_idx;
 		cl->typ = 'c';
 
-		int32_t ret = start_thread("dvbapi handler", _main_func, (void *)cl, &cl->thread, 1, 0);
-		if(ret)
-		{
-			return NULL;
-		}
+		start_thread("dvbapi handler", _main_func, (void *)cl, &cl->thread, 1, 0);
 	}
 	return NULL;
 }

@@ -5,9 +5,8 @@
 #ifdef WITH_EMU
 
 #include "cscrypt/des.h"
-#include "ffdecsa/ffdecsa.h"
+#include "module-streamrelay.h"
 #include "module-emulator-osemu.h"
-#include "module-emulator-streamserver.h"
 #include "module-emulator-powervu.h"
 #include "oscam-string.h"
 #include "oscam-time.h"
@@ -649,7 +648,7 @@ static void create_hash(uint8_t *data, int len, uint8_t *hash, int mode)
 		case 35:
 			hash_modes_19_to_27_tables_3(dataPadded, hash, table23);
 			break;
-		
+
 		case 36:
 			hash_modes_19_to_27_tables_3(dataPadded, hash, table24);
 			break;
@@ -1866,8 +1865,11 @@ static void calculate_cw(uint8_t seedType, uint8_t *seed, uint8_t csaUsed, uint8
 	}
 }
 
-int8_t powervu_ecm(uint8_t *ecm, uint8_t *dw, EXTENDED_CW *cw_ex, uint16_t srvid, uint16_t caid,
-					uint16_t tsid, uint16_t onid, uint32_t ens, emu_stream_client_key_data *cdata)
+#ifdef MODULE_STREAMRELAY
+int8_t powervu_ecm(uint8_t *ecm, uint8_t *dw, EXTENDED_CW *cw_ex, uint16_t srvid, uint16_t caid, uint16_t tsid, uint16_t onid, uint32_t ens, emu_stream_client_key_data *cdata)
+#else
+int8_t powervu_ecm(uint8_t *ecm, uint8_t *dw, EXTENDED_CW *cw_ex, uint16_t srvid, uint16_t caid, uint16_t tsid, uint16_t onid, uint32_t ens)
+#endif
 {
 	uint32_t i, j, k;
 	uint32_t ecmCrc32, keyRef0, keyRef1, keyRef2, channel_hash, group_id = 0;
@@ -1884,11 +1886,15 @@ int8_t powervu_ecm(uint8_t *ecm, uint8_t *dw, EXTENDED_CW *cw_ex, uint16_t srvid
 	//char tmpBuffer1[512];
 	char tmpBuffer2[17];
 
+#ifdef MODULE_STREAMRELAY
 	emu_stream_cw_item *cw_item;
 	int8_t update_global_key = 0;
 	int8_t update_global_keys[EMU_STREAM_SERVER_MAX_CONNECTIONS];
 
 	memset(update_global_keys, 0, sizeof(update_global_keys));
+#else
+#define EMU_STREAM_MAX_AUDIO_SUB_TRACKS 4
+#endif
 
 	if (ecmLen < 7)
 	{
@@ -2007,8 +2013,8 @@ int8_t powervu_ecm(uint8_t *ecm, uint8_t *dw, EXTENDED_CW *cw_ex, uint16_t srvid
 				channelId = b2i(2, ecm + i + 23);
 				ecmSrvid = (channelId >> 4) | ((channelId & 0xF) << 12);
 
-				cs_log_dbg(D_ATR, "csaUsed: %d, xorMode: %d, ecmSrvid: %04X, hashModeCw: %d, modeCW: %d",
-							csaUsed, xorMode, ecmSrvid, hashModeCw, modeCW);
+				cs_log_dbg(D_ATR, "csaUsed: %d, xorMode: %d, ecmSrvid: %04X (%d), hashModeCw: %d, modeCW: %d",
+							csaUsed, xorMode, ecmSrvid, srvid, hashModeCw, modeCW);
 
 				channel_hash = create_channel_hash(caid, tsid, onid, ens);
 				group_id = get_channel_group(channel_hash);
@@ -2069,6 +2075,7 @@ int8_t powervu_ecm(uint8_t *ecm, uint8_t *dw, EXTENDED_CW *cw_ex, uint16_t srvid
 
 				memcpy(seedBase, ecm + i + 6 + 2, 4);
 
+#ifdef MODULE_STREAMRELAY
 				if (cdata == NULL)
 				{
 					SAFE_MUTEX_LOCK(&emu_fixed_key_srvid_mutex);
@@ -2084,6 +2091,9 @@ int8_t powervu_ecm(uint8_t *ecm, uint8_t *dw, EXTENDED_CW *cw_ex, uint16_t srvid
 				}
 
 				calculateAll = cdata != NULL || update_global_key || cw_ex != NULL;
+#else
+				calculateAll = cw_ex != NULL;
+#endif
 
 				if (calculateAll) // Calculate all seeds
 				{
@@ -2124,6 +2134,7 @@ int8_t powervu_ecm(uint8_t *ecm, uint8_t *dw, EXTENDED_CW *cw_ex, uint16_t srvid
 					//			csaUsed, cs_hexdump(3, cw[0], 8, tmpBuffer1, sizeof(tmpBuffer1)),
 					//			(unsigned int)cdata, (unsigned int)cw_ex);
 
+#ifdef MODULE_STREAMRELAY
 					if (update_global_key)
 					{
 						for (j = 0; j < EMU_STREAM_SERVER_MAX_CONNECTIONS; j++)
@@ -2146,25 +2157,26 @@ int8_t powervu_ecm(uint8_t *ecm, uint8_t *dw, EXTENDED_CW *cw_ex, uint16_t srvid
 
 					if (cdata != NULL)
 					{
-						for (j = 0; j < 8; j++)
+						for (j = 0; j < EMU_STREAM_MAX_AUDIO_SUB_TRACKS + 2; j++)
 						{
 							if (csaUsed)
 							{
-								if (cdata->pvu_csa_ks[j] == NULL)
-								{
-									cdata->pvu_csa_ks[j] = get_key_struct();
-								}
-
 								if (ecm[0] == 0x80)
 								{
-									set_even_control_word(cdata->pvu_csa_ks[j], cw[j]);
+									if (has_dvbcsa_ecm)
+									{
+										dvbcsa_bs_key_set(cw[j], key_data[cdata->connid].key[j][EVEN]);
+									}
 								}
 								else
 								{
-									set_odd_control_word(cdata->pvu_csa_ks[j], cw[j]);
+									if (has_dvbcsa_ecm)
+									{
+										dvbcsa_bs_key_set(cw[j], key_data[cdata->connid].key[j][ODD]);
+									}
 								}
 
-								cdata->pvu_csa_used = 1;
+								cdata->csa_used = 1;
 							}
 							else
 							{
@@ -2177,10 +2189,11 @@ int8_t powervu_ecm(uint8_t *ecm, uint8_t *dw, EXTENDED_CW *cw_ex, uint16_t srvid
 									des_set_key(cw[j], cdata->pvu_des_ks[j][1]);
 								}
 
-								cdata->pvu_csa_used = 0;
+								cdata->csa_used = 0;
 							}
 						}
 					}
+#endif
 
 					if (cw_ex != NULL)
 					{
@@ -2197,7 +2210,7 @@ int8_t powervu_ecm(uint8_t *ecm, uint8_t *dw, EXTENDED_CW *cw_ex, uint16_t srvid
 							cw_ex->algo_mode = CW_ALGO_MODE_ECB;
 						}
 
-						for (j = 0; j < 4; j++)
+						for (j = 0; j < EMU_STREAM_MAX_AUDIO_SUB_TRACKS; j++)
 						{
 							memset(cw_ex->audio[j], 0, 16);
 
@@ -2288,6 +2301,31 @@ static void create_data_unmask_emm_mode_03(uint8_t *emmBody, uint8_t *data)
 		data[5 + i * 8] = emmBody[0x19 + i * 0x1B];
 		data[6 + i * 8] = emmBody[0x15 + i * 0x1B];
 		data[7 + i * 8] = emmBody[0x03 + i * 0x1B];
+	}
+}
+
+static void create_data_unmask_emm_mode_04(uint8_t *emmBody, uint8_t *data)
+{
+	int i;
+	uint8_t padding[] =
+	{
+		0x56, 0xC7, 0x05, 0x66, 0xC7, 0x4E, 0xC1, 0xA0,
+		0x9E, 0xD1, 0xFE, 0x92, 0xE8, 0xCD, 0x5F, 0xAF,
+		0xCF, 0xE5, 0xE9, 0x9E, 0x7A, 0x38, 0xAC, 0x68
+	};
+
+	memcpy(data + 0x28, padding, 0x18);
+
+	for (i = 0; i < 5; i++)
+	{
+		data[0 + i * 8] = emmBody[0x06 + i * 0x1B];
+		data[1 + i * 8] = emmBody[0x19 + i * 0x1B];
+		data[2 + i * 8] = emmBody[0x16 + i * 0x1B];
+		data[3 + i * 8] = emmBody[0x0A + i * 0x1B];
+		data[4 + i * 8] = emmBody[0x13 + i * 0x1B];
+		data[5 + i * 8] = emmBody[0x05 + i * 0x1B];
+		data[6 + i * 8] = emmBody[0x14 + i * 0x1B];
+		data[7 + i * 8] = emmBody[0x18 + i * 0x1B];
 	}
 }
 
@@ -2428,6 +2466,47 @@ static void unmask_emm(uint8_t *emm)
 			emm[0x13 + 0x08 + i * 0x1B] ^= mask[0x0E];
 			emm[0x13 + 0x0C + i * 0x1B] ^= mask[0x0F];
 		}
+	}
+	else if (modeUnmask == 0x04)
+	{
+		for (i = 0; i < 5; i++)
+		{
+			emm[0x13 + 0x05 + i * 0x1B] -= emm[0x13 + 0x04 + i * 0x1B];
+			emm[0x13 + 0x06 + i * 0x1B] -= emm[0x13 + 0x0B + i * 0x1B];
+			emm[0x13 + 0x0A + i * 0x1B] -= emm[0x13 + 0x17 + i * 0x1B];
+			emm[0x13 + 0x13 + i * 0x1B] -= emm[0x13 + 0x1A + i * 0x1B];
+			emm[0x13 + 0x14 + i * 0x1B] -= emm[0x13 + 0x0E + i * 0x1B];
+			emm[0x13 + 0x16 + i * 0x1B] -= emm[0x13 + 0x15 + i * 0x1B];
+			emm[0x13 + 0x18 + i * 0x1B] -= emm[0x13 + 0x08 + i * 0x1B];
+			emm[0x13 + 0x19 + i * 0x1B] -= emm[0x13 + 0x12 + i * 0x1B];
+		}
+
+		create_data_unmask_emm_mode_04(emm + 0x13, data);
+		create_hash_mode_04(data, mask);
+
+		for (i = 0; i < 5; i++)
+		{
+			emm[0x13 + 0x0B + i * 0x1B] ^= mask[0x00];
+			emm[0x13 + 0x12 + i * 0x1B] ^= mask[0x01];
+			emm[0x13 + 0x15 + i * 0x1B] ^= mask[0x02];
+			emm[0x13 + 0x17 + i * 0x1B] ^= mask[0x03];
+			emm[0x13 + 0x1A + i * 0x1B] ^= mask[0x04];
+			emm[0x13 + 0x04 + i * 0x1B] ^= mask[0x05];
+			emm[0x13 + 0x0E + i * 0x1B] ^= mask[0x06];
+			emm[0x13 + 0x08 + i * 0x1B] ^= mask[0x07];
+			emm[0x13 + 0x09 + i * 0x1B] ^= mask[0x08];
+			emm[0x13 + 0x0C + i * 0x1B] ^= mask[0x09];
+			emm[0x13 + 0x03 + i * 0x1B] ^= mask[0x0A];
+			emm[0x13 + 0x0F + i * 0x1B] ^= mask[0x0B];
+			emm[0x13 + 0x10 + i * 0x1B] ^= mask[0x0C];
+			emm[0x13 + 0x07 + i * 0x1B] ^= mask[0x0D];
+			emm[0x13 + 0x0D + i * 0x1B] ^= mask[0x0E];
+			emm[0x13 + 0x11 + i * 0x1B] ^= mask[0x0F];
+		}
+	}
+	else
+	{
+		cs_log("A new unknown emm mode [%d] is in use.", modeUnmask);
 	}
 
 	// Fix Header

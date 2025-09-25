@@ -4,7 +4,7 @@
 #ifdef WITH_EMU
 
 // Version info
-#define EMU_VERSION 799
+#define EMU_VERSION 801
 
 #define EMU_MAX_CHAR_KEYNAME 12
 #define EMU_KEY_FILENAME "SoftCam.Key"
@@ -58,6 +58,7 @@ extern KeyDataContainer NagraKeys;
 extern KeyDataContainer IrdetoKeys;
 extern KeyDataContainer BissSWs;      // 'F' identifier - BISS1 and BISS2 mode 1/E session words
 extern KeyDataContainer Biss2Keys;    // 'G' identifier - BISS2 mode CA session keys (ECM keys)
+extern KeyDataContainer OmnicryptKeys;
 extern KeyDataContainer PowervuKeys;
 extern KeyDataContainer TandbergKeys;
 extern KeyDataContainer StreamKeys;

@@ -16,13 +16,13 @@
 #include "module-dvbapi-mca.h"
 #include "module-dvbapi-chancache.h"
 #include "module-gbox-sms.h"
-#include "module-ird-guess.h"
 #include "module-lcd.h"
 #include "module-led.h"
 #include "module-stat.h"
 #include "module-webif.h"
 #include "module-webif-tpl.h"
 #include "module-cw-cycle-check.h"
+#include "module-streamrelay.h"
 #include "oscam-chk.h"
 #include "oscam-cache.h"
 #include "oscam-client.h"
@@ -43,7 +43,6 @@
 
 #ifdef WITH_EMU
 	void add_emu_reader(void);
-	void stop_stream_server(void);
 #endif
 
 #ifdef WITH_SSL
@@ -90,16 +89,10 @@ struct s_client *first_client = NULL; // Pointer to clients list, first client i
 struct s_reader *first_active_reader = NULL; // list of active readers (enable=1 deleted = 0)
 LLIST *configured_readers = NULL; // list of all (configured) readers
 
-uint16_t len4caid[256]; // table for guessing caid (by len)
 char cs_confdir[128];
 uint16_t cs_dblevel = 0; // Debug Level
 int32_t thread_pipe[2] = {0, 0};
 static int8_t cs_restart_mode = 1; // Restartmode: 0=off, no restart fork, 1=(default)restart fork, restart by webif, 2=like=1, but also restart on segfaults
-#ifdef WITH_UTF8
-uint8_t cs_http_use_utf8 = 1;
-#else
-uint8_t cs_http_use_utf8 = 0;
-#endif
 static int8_t cs_capture_SEGV;
 static int8_t cs_dump_stack;
 static uint16_t cs_waittime = 60;
@@ -149,7 +142,7 @@ static void show_usage(void)
 		   "| |_| |___) | |_| (_| | | | | | |\n"
 		   " \\___/|____/ \\___\\__,_|_| |_| |_|\n\n");
 	printf("OSCam Cardserver v%s, build r%s (%s)\n", CS_VERSION, CS_SVN_VERSION, CS_TARGET);
-	printf("Copyright (C) 2009-2020 OSCam developers.\n");
+	printf("Copyright (C) 2009-2024 OSCam developers.\n");
 	printf("This program is distributed under GPLv3.\n");
 	printf("OSCam is based on Streamboard mp-cardserver v0.9d written by dukat\n");
 	printf("Visit https://board.streamboard.tv/ for more details.\n\n");
@@ -208,10 +201,6 @@ static void show_usage(void)
 	printf("\n Settings:\n");
 	printf(" -p, --pending-ecm <num> | Set the maximum number of pending ECM packets.\n");
 	printf("                         . Default: 32 Max: 4096\n");
-	if(config_enabled(WEBIF))
-	{
-		printf(" -u, --utf8              | Enable WebIf support for UTF-8 charset.\n");
-	}
 	printf("\n Debug parameters:\n");
 	printf(" -a, --crash-dump        | Write oscam.crash file on segfault. This option\n");
 	printf("                         . needs GDB to be installed and OSCam executable to\n");
@@ -252,7 +241,6 @@ static const struct option long_options[] =
 	{ "show-sensitive",     no_argument,       NULL, 'S' },
 	{ "capture-segfaults",  no_argument,       NULL, 's' },
 	{ "temp-dir",           required_argument, NULL, 't' },
-	{ "utf8",               no_argument,       NULL, 'u' },
 	{ "build-info",         no_argument,       NULL, 'V' },
 	{ "wait",               required_argument, NULL, 'w' },
 	{ 0, 0, 0, 0 }
@@ -337,13 +325,6 @@ static void parse_cmdline_params(int argc, char **argv)
 			}
 			break;
 		}
-		case 'u': // --utf8
-			if(config_enabled(WEBIF))
-			{
-				cs_http_use_utf8 = 1;
-				printf("WARNING: Web interface UTF-8 mode enabled. Carefully read documentation as bugs may arise.\n");
-			}
-			break;
 		case 'V': // --build-info
 			write_versionfile(true);
 			exit(EXIT_SUCCESS);
@@ -411,11 +392,14 @@ static void write_versionfile(bool use_stdout)
 	write_conf(WEBIF, "Web interface support");
 	write_conf(WEBIF_LIVELOG, "LiveLog support");
 	write_conf(WEBIF_JQUERY, "jQuery support intern");
-	write_conf(TOUCH, "Touch interface support");
 	write_conf(WITH_SSL, "SSL support");
 	write_conf(HAVE_DVBAPI, "DVB API support");
 	if(config_enabled(HAVE_DVBAPI))
 	{
+		if(config_enabled(MODULE_STREAMRELAY))
+		{
+			write_conf(true, "DVB API with Stream Relay support");
+		}
 		write_conf(WITH_AZBOX, "DVB API with AZBOX support");
 		write_conf(WITH_MCA, "DVB API with MCA support");
 		write_conf(WITH_COOLAPI, "DVB API with COOLAPI support");
@@ -424,12 +408,7 @@ static void write_versionfile(bool use_stdout)
 		write_conf(WITH_STAPI5, "DVB API with STAPI5 support");
 		write_conf(WITH_NEUTRINO, "DVB API with NEUTRINO support");
 		write_conf(READ_SDT_CHARSETS, "DVB API read-sdt charsets");
-		if(config_enabled(WITH_EMU))
-		{
-			write_conf(true, "DVB API with ICAM v9 stream relay support");
-		}
 	}
-	write_conf(IRDETO_GUESSING, "Irdeto guessing");
 	write_conf(CS_ANTICASC, "Anti-cascading support");
 	write_conf(WITH_DEBUG, "Debug mode");
 	write_conf(MODULE_MONITOR, "Monitor");
@@ -448,6 +427,9 @@ static void write_versionfile(bool use_stdout)
 		case CLOCK_TYPE_MONOTONIC: write_conf(CLOCKFIX, "Clockfix with monotonic clock"); break;
 	}
 	write_conf(IPV6SUPPORT, "IPv6 support");
+#if defined(__arm__) || defined(__aarch64__)
+	write_conf(WITH_ARM_NEON, "ARM NEON (SIMD/MPE) support");
+#endif
 	write_conf(WITH_EMU, "Emulator support");
 	write_conf(WITH_SOFTCAM, "Built-in SoftCam.Key");
 
@@ -465,6 +447,7 @@ static void write_versionfile(bool use_stdout)
 	write_conf(MODULE_CONSTCW, "constant CW");
 	write_conf(MODULE_PANDORA, "Pandora");
 	write_conf(MODULE_GHTTP, "ghttp");
+	write_conf(MODULE_STREAMRELAY, "Streamrelay");
 
 	fprintf(fp, "\n");
 	write_conf(WITH_CARDREADER, "Reader support");
@@ -1847,6 +1830,9 @@ int32_t main(int32_t argc, char *argv[])
 
 	init_sidtab();
 	init_readerdb();
+#ifdef MODULE_STREAMRELAY
+	init_stream_server();
+#endif
 #ifdef WITH_EMU
 	add_emu_reader();
 #endif
@@ -1860,9 +1846,6 @@ int32_t main(int32_t argc, char *argv[])
 	start_garbage_collector(gbdb);
 
 	cacheex_init();
-
-	init_len4caid();
-	init_irdeto_guess_tab();
 
 	write_versionfile(false);
 
@@ -1938,7 +1921,7 @@ int32_t main(int32_t argc, char *argv[])
 #ifdef MODULE_GBOX
 	stop_gbx_ticker();
 #endif
-#ifdef WITH_EMU
+#ifdef MODULE_STREAMRELAY
 	stop_stream_server();
 #endif
 	webif_close();
@@ -1997,7 +1980,6 @@ int32_t main(int32_t argc, char *argv[])
 	cfg.account = NULL;
 	init_free_sidtab();
 	free_readerdb();
-	free_irdeto_guess_tab();
 	config_free();
 	ssl_done();
 

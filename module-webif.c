@@ -39,7 +39,6 @@
 extern const struct s_cardreader *cardreaders[];
 extern char cs_confdir[];
 extern uint32_t ecmcwcache_size;
-extern uint8_t cs_http_use_utf8;
 extern uint32_t cfg_sidtab_generation;
 extern int32_t exit_oscam;
 extern uint8_t cacheex_peer_id[8];
@@ -1298,7 +1297,7 @@ static char *send_oscam_config_scam(struct templatevars *vars, struct uriparams 
 }
 #endif
 
-#ifdef WITH_EMU
+#ifdef MODULE_STREAMRELAY
 static char *send_oscam_config_streamrelay(struct templatevars *vars, struct uriparams *params)
 {
 	char *value;
@@ -1307,22 +1306,28 @@ static char *send_oscam_config_streamrelay(struct templatevars *vars, struct uri
 
 	webif_save_config("streamrelay", vars, params);
 
-	tpl_printf(vars, TPLADD, "STREAM_SOURCE_HOST", "%s", cfg.emu_stream_source_host);
-	tpl_printf(vars, TPLADD, "STREAM_SOURCE_PORT", "%d", cfg.emu_stream_source_port);
-	if(cfg.emu_stream_source_auth_user)
-		{ tpl_printf(vars, TPLADD, "STREAM_SOURCE_AUTH_USER", "%s", cfg.emu_stream_source_auth_user); }
-	if(cfg.emu_stream_source_auth_password)
-		{ tpl_printf(vars, TPLADD, "STREAM_SOURCE_AUTH_PASSWORD", "%s", cfg.emu_stream_source_auth_password); }
-	tpl_printf(vars, TPLADD, "STREAM_RELAY_PORT", "%d", cfg.emu_stream_relay_port);
-	tpl_printf(vars, TPLADD, "STREAM_ECM_DELAY", "%d", cfg.emu_stream_ecm_delay);
+	tpl_printf(vars, TPLADD, "STREAM_SOURCE_HOST", "%s", cfg.stream_source_host);
+	tpl_printf(vars, TPLADD, "STREAM_SOURCE_PORT", "%d", cfg.stream_source_port);
+	if(cfg.stream_source_auth_user)
+		{ tpl_printf(vars, TPLADD, "STREAM_SOURCE_AUTH_USER", "%s", cfg.stream_source_auth_user); }
+	if(cfg.stream_source_auth_password)
+		{ tpl_printf(vars, TPLADD, "STREAM_SOURCE_AUTH_PASSWORD", "%s", cfg.stream_source_auth_password); }
+#ifdef MODULE_RADEGAST
+	tpl_addVar(vars, TPLADD, "STREAM_CLIENT_SOURCE_HOST", (cfg.stream_client_source_host == 1) ? "checked" : "");
+#endif
+	tpl_printf(vars, TPLADD, "STREAM_RELAY_PORT", "%d", cfg.stream_relay_port);
+	tpl_printf(vars, TPLADD, "STREAM_RELAY_BUFFER_TIME", "%d", cfg.stream_relay_buffer_time);
 
-	tpl_printf(vars, TPLADD, "TMP", "STREAMRELAYENABLEDSELECTED%d", cfg.emu_stream_relay_enabled);
-	tpl_addVar(vars, TPLADD, tpl_getVar(vars, "TMP"), "selected");
-
+#ifdef WITH_EMU
 	tpl_printf(vars, TPLADD, "TMP", "STREAMEMMENABLEDSELECTED%d", cfg.emu_stream_emm_enabled);
 	tpl_addVar(vars, TPLADD, tpl_getVar(vars, "TMP"), "selected");
+	tpl_printf(vars, TPLADD, "STREAM_ECM_DELAY", "%d", cfg.emu_stream_ecm_delay);
+#endif
 
-	value = mk_t_caidtab(&cfg.emu_stream_relay_ctab);
+	tpl_printf(vars, TPLADD, "TMP", "STREAMRELAYENABLEDSELECTED%d", cfg.stream_relay_enabled);
+	tpl_addVar(vars, TPLADD, tpl_getVar(vars, "TMP"), "selected");
+
+	value = mk_t_caidtab(&cfg.stream_relay_ctab);
 	tpl_addVar(vars, TPLADD, "STREAM_RELAY_CTAB", value);
 	free_mk_t(value);
 
@@ -1684,6 +1689,12 @@ static char *send_oscam_config_dvbapi(struct templatevars *vars, struct uriparam
 	if(cfg.dvbapi_write_sdt_prov > 0)
 		{ tpl_addVar(vars, TPLADD, "WRITESDTPROVCHECKED", "checked"); }
 
+#ifdef MODULE_STREAMRELAY
+	//demuxer_fix
+	if(cfg.dvbapi_demuxer_fix > 0)
+		{ tpl_addVar(vars, TPLADD, "DEMUXERFIXCHECKED", "checked"); }
+#endif
+
 	//TCP listen port
 	if(cfg.dvbapi_listenport > 0)
 		{ tpl_printf(vars, TPLADD, "LISTENPORT", "%d", cfg.dvbapi_listenport); }
@@ -1758,7 +1769,7 @@ static char *send_oscam_config(struct templatevars *vars, struct uriparams *para
 #ifdef MODULE_SCAM
 	else if(!strcmp(part, "scam")) { return send_oscam_config_scam(vars, params); }
 #endif
-#ifdef WITH_EMU
+#ifdef MODULE_STREAMRELAY
 	else if(!strcmp(part, "streamrelay")) { return send_oscam_config_streamrelay(vars, params); }
 #endif
 #ifdef MODULE_CCCAM
@@ -2025,6 +2036,10 @@ static char *send_oscam_reader(struct templatevars *vars, struct uriparams *para
 				tpl_addVar(vars, TPLADD, "LASTGSMS", rdr->last_gsms);
 			}
 #endif
+			if(apicall)
+			{
+				tpl_printf(vars, TPLADD, "PICONENABLED", "%d", cfg.http_showpicons?1:0);
+			}
 			tpl_addVar(vars, TPLADD, "READERNAMEENC", urlencode(vars, rdr->label));
 			if(!existing_insert)
 			{
@@ -2048,6 +2063,15 @@ static char *send_oscam_reader(struct templatevars *vars, struct uriparams *para
 				{
 					tpl_addVar(vars, TPLADD, "CLIENTPROTOSORT", (const char*)new_proto);
 					tpl_addVar(vars, TPLADD, "CLIENTPROTO", (const char*)new_proto);
+					if(cfg.http_showpicons)
+					{
+						char picon_name[32];
+						snprintf(picon_name, sizeof(picon_name) / sizeof(char) - 1, "%s", new_proto);
+						if(picon_exists(picon_name))
+						{
+							tpl_printf(vars, TPLADDONCE, "PROTOICON", "%s",(char*)new_proto);
+						}
+					}
 
 					if(rdr->cacheex.feature_bitfield & 32)
 						tpl_addVar(vars, TPLADD, "CLIENTPROTOTITLE", rdr->cacheex.aio_version);
@@ -2058,10 +2082,28 @@ static char *send_oscam_reader(struct templatevars *vars, struct uriparams *para
 				{
 					tpl_addVar(vars, TPLADD, "CLIENTPROTOSORT", proto);
 					tpl_addVar(vars, TPLADD, "CLIENTPROTO", proto);
+					if(cfg.http_showpicons)
+					{
+						char picon_name[32];
+						snprintf(picon_name, sizeof(picon_name) / sizeof(char) - 1, "%s", proto);
+						if(picon_exists(picon_name))
+						{
+							tpl_printf(vars, TPLADDONCE, "PROTOICON", "%s",(char *)proto);
+						}
+					}
 				}
 #else
 				tpl_addVar(vars, TPLADD, "CLIENTPROTO", reader_get_type_desc(rdr, 0));
 				tpl_addVar(vars, TPLADD, "CLIENTPROTOSORT", reader_get_type_desc(rdr, 0));
+				if(cfg.http_showpicons)
+				{
+					char picon_name[32];
+					snprintf(picon_name, sizeof(picon_name) / sizeof(char) - 1, "%s", reader_get_type_desc(rdr, 0));
+					if(picon_exists(picon_name))
+					{
+						tpl_printf(vars, TPLADDONCE, "PROTOICON", "%s", reader_get_type_desc(rdr, 0));
+					}
+				}
 #endif
 				switch(rdr->card_status)
 				{
@@ -2119,6 +2161,15 @@ static char *send_oscam_reader(struct templatevars *vars, struct uriparams *para
 
 					tpl_addVar(vars, TPLADD, "CLIENTPROTO", reader_get_type_desc(rdr, 0));
 					tpl_addVar(vars, TPLADD, "CLIENTPROTOSORT", reader_get_type_desc(rdr, 0));
+					if(cfg.http_showpicons)
+					{
+						char picon_name[32];
+						snprintf(picon_name, sizeof(picon_name) / sizeof(char) - 1, "%s", reader_get_type_desc(rdr, 0));
+						if(picon_exists(picon_name))
+						{
+							tpl_printf(vars, TPLADDONCE, "PROTOICON", "%s", reader_get_type_desc(rdr, 0));
+						}
+					}
 				}
 			}
 
@@ -2620,6 +2671,9 @@ static char *send_oscam_reader_config(struct templatevars *vars, struct uriparam
 		tpl_addVar(vars, TPLADD, "AUDISABLEDVALUE", (rdr->audisabled == 1) ? "1" : "0");
 	}
 
+	tpl_printf(vars, TPLADD, "TMP", "AUTYPE%d", rdr->autype);
+	tpl_addVar(vars, TPLADD, tpl_getVar(vars, "TMP"), "selected");
+
 	// AUprovid
 	if(rdr->auprovid)
 		{ tpl_printf(vars, TPLADD, "AUPROVID", "%06X", rdr->auprovid); }
@@ -2661,84 +2715,120 @@ static char *send_oscam_reader_config(struct templatevars *vars, struct uriparam
 #endif
 
 	// RSA Key
-	int32_t len = rdr->rsa_mod_length;
-	if(len > 0)
-	{
-		for(i = 0; i < len; i++) { tpl_printf(vars, TPLAPPEND, "RSAKEY", "%02X", rdr->rsa_mod[i]); }
-	}
+	for(i = 0; i < rdr->rsa_mod_length; i++)
+		{ tpl_printf(vars, TPLAPPEND, "RSAKEY", "%02X", rdr->rsa_mod[i]); }
 
 	// 3DES Key
-	len = rdr->des_key_length;
-	if(len > 0)
-	{
-		for(i = 0; i < len; i++) { tpl_printf(vars, TPLAPPEND, "DESKEY", "%02X", rdr->des_key[i]); }
-	}
+	for(i = 0; i < rdr->des_key_length; i++)
+		{ tpl_printf(vars, TPLAPPEND, "DESKEY", "%02X", rdr->des_key[i]); }
 
 	// BoxKey
-	len = rdr->boxkey_length;
-	if(len > 0)
-	{
-		for(i = 0; i < len ; i++)
-			{ tpl_printf(vars, TPLAPPEND, "BOXKEY", "%02X", rdr->boxkey[i]); }
-	}
+	for(i = 0; i < rdr->boxkey_length ; i++)
+		{ tpl_printf(vars, TPLAPPEND, "BOXKEY", "%02X", rdr->boxkey[i]); }
+
+#ifdef READER_CONAX
+	for(i = 0; i < rdr->cwpk_mod_length; i++)
+		{ tpl_printf(vars, TPLAPPEND, "CWPKKEY", "%02X", rdr->cwpk_mod[i]); }
+#endif
+
+#ifdef READER_NAGRA
+	// nuid (CAK6.3)
+	for(i = 0; i < rdr->cak63nuid_length; i++)
+		{ tpl_printf(vars, TPLAPPEND, "CAK63NUID", "%02X", rdr->cak63nuid[i]); }
+
+	// cwekey (CAK6.3)
+	for(i = 0; i < rdr->cak63cwekey_length; i++)
+		{ tpl_printf(vars, TPLAPPEND, "CAK63CWEKEY", "%02X", rdr->cak63cwekey[i]); }
+#endif
 
 #ifdef READER_NAGRA_MERLIN
+	int32_t j;
+
+	// idird (CAK7)
+	for(i = 0; i < rdr->idird_length; i++)
+		{ tpl_printf(vars, TPLAPPEND, "IDIRD", "%02X", rdr->idird[i]); }
+
+	// cmd0e_provider (CAK7)
+	for(i = 0; i < rdr->cmd0eprov_length; i++)
+		{ tpl_printf(vars, TPLAPPEND, "CMD0EPROV", "%02X", rdr->cmd0eprov[i]); }
+
 	// mod1 (CAK7)
-	len = rdr->mod1_length;
-	if(len > 0)
-	{
-		for(i = 0; i < len ; i++)
-			{ tpl_printf(vars, TPLAPPEND, "MOD1", "%02X", rdr->mod1[i]); }
-	}
+	for(i = 0; i < rdr->mod1_length ; i++)
+		{ tpl_printf(vars, TPLAPPEND, "MOD1", "%02X", rdr->mod1[i]); }
+
+	// mod2 (CAK7)
+	for(i = 0; i < rdr->mod2_length ; i++)
+		{ tpl_printf(vars, TPLAPPEND, "MOD2", "%02X", rdr->mod2[i]); }
+
+	// key3588 (CAK7)
+	for(i = 0; i < rdr->key3588_length; i++)
+		{ tpl_printf(vars, TPLAPPEND, "KEY3588", "%02X", rdr->key3588[i]); }
+
+	// key3310 (CAK7)
+	for(i = 0; i < rdr->key3310_length; i++)
+		{ tpl_printf(vars, TPLAPPEND, "KEY3310", "%02X", rdr->key3310[i]); }
+
+	// key3460 (CAK7)
+	for(i = 0; i < rdr->key3460_length; i++)
+		{ tpl_printf(vars, TPLAPPEND, "KEY3460", "%02X", rdr->key3460[i]); }
 
 	// data50 (CAK7)
-	len = rdr->data50_length;
-	if(len > 0)
-	{
-		for(i = 0; i < len ; i++)
-			{ tpl_printf(vars, TPLAPPEND, "DATA50", "%02X", rdr->data50[i]); }
-	}
+	for(i = 0; i < rdr->data50_length; i++)
+		{ tpl_printf(vars, TPLAPPEND, "DATA50", "%02X", rdr->data50[i]); }
 
 	// mod50 (CAK7)
-	len = rdr->mod50_length;
-	if(len > 0)
-	{
-		for(i = 0; i < len ; i++)
-			{ tpl_printf(vars, TPLAPPEND, "MOD50", "%02X", rdr->mod50[i]); }
-	}
-
-	// key60 (CAK7)
-	len = rdr->key60_length;
-	if(len > 0)
-	{
-		for(i = 0; i < len ; i++)
-			{ tpl_printf(vars, TPLAPPEND, "KEY60", "%02X", rdr->key60[i]); }
-	}
-
-	// exp60 (CAK7)
-	len = rdr->exp60_length;
-	if(len > 0)
-	{
-		for(i = 0; i < len ; i++)
-			{ tpl_printf(vars, TPLAPPEND, "EXP60", "%02X", rdr->exp60[i]); }
-	}
+	for(i = 0; i < rdr->mod50_length; i++)
+		{ tpl_printf(vars, TPLAPPEND, "MOD50", "%02X", rdr->mod50[i]); }
 
 	// nuid (CAK7)
-	len = rdr->nuid_length;
-	if(len > 0)
+	for(i = 0; i < rdr->nuid_length; i++)
+		{ tpl_printf(vars, TPLAPPEND, "NUID", "%02X", rdr->nuid[i]); }
+
+	// OTP CSC (CAK7)
+	for(i = 0; i < rdr->otpcsc_length; i++)
+		{ tpl_printf(vars, TPLAPPEND, "OTPCSC", "%02X", rdr->otpcsc[i]); }
+
+	// OTA CSC (CAK7)
+	for(i = 0; i < rdr->otacsc_length; i++)
+		{ tpl_printf(vars, TPLAPPEND, "OTACSC", "%02X", rdr->otacsc[i]); }
+
+	// Force Pairing Type (CAK7)
+	for(i = 0; i < rdr->forcepair_length; i++)
+		{ tpl_printf(vars, TPLAPPEND, "FORCEPAIR", "%02X", rdr->forcepair[i]); }
+
+	// cwekeys (CAK7)
+	for(j = 0; j < 8; j++)
 	{
-		for(i = 0; i < len ; i++)
-			{ tpl_printf(vars, TPLAPPEND, "NUID", "%02X", rdr->nuid[i]); }
+		char key[8] = "CWEKEYX";
+		key[6] = '0' + j;
+		for(i = 0; i < rdr->cwekey_length[j]; i++)
+			{ tpl_printf(vars, TPLAPPEND, key, "%02X", rdr->cwekey[j][i]); }
 	}
 
-	// cwekey (CAK7)
-	len = rdr->cwekey_length;
-	if(len > 0)
-	{
-		for(i = 0; i < len ; i++)
-			{ tpl_printf(vars, TPLAPPEND, "CWEKEY", "%02X", rdr->cwekey[i]); }
-	}
+	// force_cw_swap
+	if(rdr->forcecwswap)
+		{ tpl_addVar(vars, TPLADD, "FORCECWSWAPCHECKED", "checked"); }
+
+	// only_even_SA
+	if(rdr->evensa)
+		{ tpl_addVar(vars, TPLADD, "EVENSACHECKED", "checked"); }
+
+	// force_EMM_82
+	if(rdr->forceemmg)
+		{ tpl_addVar(vars, TPLADD, "FORCEEMMGCHECKED", "checked"); }
+
+        // OTA_CWPKs
+        if(rdr->cwpkota)
+                { tpl_addVar(vars, TPLADD, "CWPKOTACHECKED", "checked"); }
 #endif
+
+	// CWPK CaID (CAK7)
+	for(i = 0; i < rdr->cwpkcaid_length ; i++)
+		{ tpl_printf(vars, TPLAPPEND, "CWPKCAID", "%02X", rdr->cwpkcaid[i]); }
+
+	// cak7_mode
+	if(rdr->cak7_mode)
+		{ tpl_addVar(vars, TPLADD, "NAGRACAK7MODECHECKED", "checked"); }
 
 	// ins7E
 	if(rdr->ins7E[0x1A])
@@ -6439,11 +6529,7 @@ static char *send_oscam_status(struct templatevars * vars, struct uriparams * pa
 	cs_readunlock(__func__, &clientlist_lock);
 	cs_readunlock(__func__, &readerlist_lock);
 
-	uint8_t is_touch = 0;
-	if(config_enabled(TOUCH) && streq(tpl_getVar(vars, "SUBDIR"), TOUCH_SUBDIR))
-	{is_touch=1;}
-
-	if(cfg.http_status_log || (apicall == 1 && strcmp(getParam(params, "appendlog"), "1") == 0) || is_touch)
+	if(cfg.http_status_log || (apicall == 1 && strcmp(getParam(params, "appendlog"), "1") == 0))
 	{
 		if(cfg.loghistorylines && log_history)
 		{
@@ -6627,7 +6713,7 @@ static char *send_oscam_status(struct templatevars * vars, struct uriparams * pa
 	}
 
 #ifdef WITH_DEBUG
-	if(cfg.http_status_log || is_touch)
+	if(cfg.http_status_log)
 	{
 		// Debuglevel Selector
 		int32_t lvl;
@@ -6664,7 +6750,7 @@ static char *send_oscam_status(struct templatevars * vars, struct uriparams * pa
 	}
 #endif
 
-	if(cfg.http_status_log || is_touch)
+	if(cfg.http_status_log)
 		tpl_addVar(vars, TPLADDONCE, "LOG_HISTORY", tpl_getTpl(vars, "LOGHISTORYBIT"));
 
 	if(apicall)
@@ -6696,10 +6782,7 @@ static char *send_oscam_status(struct templatevars * vars, struct uriparams * pa
 		}
 	}
 
-	if(is_touch)
-		{ return tpl_getTpl(vars, "TOUCH_STATUS"); }
-	else
-		{ return tpl_getTpl(vars, "STATUS"); }
+	return tpl_getTpl(vars, "STATUS");
 }
 
 static char *send_oscam_services_edit(struct templatevars * vars, struct uriparams * params)
@@ -8434,7 +8517,7 @@ static char *send_oscam_api(struct templatevars * vars, FILE * f, struct uripara
 				cmd_pack->client = webif_client;
 				cmd_pack->cmdlen = strlen(getParam(params, "cmd")) / 2;
 
-				if(cmd_pack->cmdlen > 0 && abs(cmd_pack->cmdlen) <= sizeof(cmd_pack->cmd))
+				if(cmd_pack->cmdlen > 0 && (unsigned long)abs(cmd_pack->cmdlen) <= sizeof(cmd_pack->cmd))
 				{
 					if(key_atob_l(getParam(params, "cmd"), cmd_pack->cmd, cmd_pack->cmdlen*2))
 					{
@@ -9262,7 +9345,7 @@ static int32_t process_request(FILE * f, IN_ADDR_T in)
 				tpl_addVar(vars, TPLADD, "LOCALE_DECPOINT", strstr(tpl_getVar(vars, "TMP_DECPOINT"), ",") ? ",": ".");
 			}
 
-			tpl_addVar(vars, TPLADD, "HTTP_CHARSET", cs_http_use_utf8 ? "UTF-8" : "ISO-8859-1");
+			tpl_addVar(vars, TPLADD, "HTTP_CHARSET", "UTF-8");
 			if(cfg.http_picon_size > 0)
 			{
 				tpl_printf(vars, TPLADD, "HTTPPICONSIZEINS", "img.statususericon, img.protoicon, img.usericon, img.readericon {height:%dpx !important;max-height:%dpx !important;}", cfg.http_picon_size, cfg.http_picon_size);
